@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 import cv2
 import numpy as np
-from keras.preprocessing.image import Iterator
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.preprocessing.image import Iterator
 from boxcars_image_transformations import alter_HSV, image_drop, unpack_3DBB, add_bb_noise_flip
 import random
 
@@ -15,15 +18,14 @@ class BoxCarsDataGenerator(Iterator):
         self.generate_y = generate_y
         self.dataset = dataset
         self.image_size = image_size
+        self.current_batch_size = batch_size
         self.training_mode = training_mode
         if self.dataset.atlas is None:
             self.dataset.load_atlas()
 
-    #%%
-    def next(self):
-        with self.lock:
-            index_array, current_index, current_batch_size = next(self.index_generator)
-        x = np.empty([current_batch_size] + list(self.image_size) + [3], dtype=np.float32)
+
+    def _get_batches_of_transformed_samples(self, index_array):
+        x = np.empty([self.current_batch_size] + list(self.image_size) + [3], dtype=np.float32)
         for i, ind in enumerate(index_array):
             vehicle_id, instance_id = self.dataset.X[self.part][ind]
             vehicle, instance, bb3d = self.dataset.get_vehicle_instance_data(vehicle_id, instance_id)
@@ -41,4 +43,10 @@ class BoxCarsDataGenerator(Iterator):
             return x
         y = self.dataset.Y[self.part][index_array]
         return x, y
+    #%%
+    def next(self):
+        with self.lock:
+            index_array, current_index, current_batch_size = next(self.index_generator)
+            return self._get_batches_of_transformed_samples(index_array)
+       
 

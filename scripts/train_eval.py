@@ -2,25 +2,33 @@
 import _init_paths
 # this should be soon to prevent tensorflow initialization with -h parameter
 from utils import ensure_dir, parse_args
-args = parse_args(["ResNet50", "VGG16", "VGG19", "InceptionV3"])
+args = parse_args(["ResNet50", "VGG16", "VGG19", "InceptionV3", "EfficientNetB0"])
 
 # other imports
 import os
 import time
 import sys
+import math
 
 from boxcars_dataset import BoxCarsDataset
 from boxcars_data_generator import BoxCarsDataGenerator
 
-from keras.applications.resnet50 import ResNet50
-from keras.applications.vgg16 import VGG16
-from keras.applications.vgg19 import VGG19
-from keras.applications.inception_v3 import InceptionV3
-from keras.layers import Dense, Flatten, Dropout, AveragePooling2D
-from keras.models import Model, load_model
-from keras.optimizers import SGD
-from keras.callbacks import ModelCheckpoint, TensorBoard
+import tensorflow as tf
 
+
+from tensorflow import keras
+from tensorflow.keras.applications.resnet50 import ResNet50
+from tensorflow.keras.applications.vgg16 import VGG16
+from tensorflow.keras.applications.vgg19 import VGG19
+from tensorflow.keras.applications.inception_v3 import InceptionV3
+from tensorflow.keras.applications import EfficientNetB0
+from tensorflow.keras.layers import Dense, Flatten, Dropout, AveragePooling2D
+from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.optimizers import SGD
+from tensorflow.keras.callbacks import ModelCheckpoint, TensorBoard
+
+#os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 #%% initialize dataset
 if args.estimated_3DBB is None:
@@ -44,6 +52,10 @@ if model is None:
         base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(224,224,3))
         x = Flatten()(base_model.output)
         
+    if args.train_net in ("EfficientNetB0", ):
+        base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=(224,224,3))
+        x = Flatten()(base_model.output)
+        
     if args.train_net in ("VGG16", "VGG19"):
         if args.train_net == "VGG16":
             base_model = VGG16(weights='imagenet', include_top=False, input_shape=(224,224,3))
@@ -62,10 +74,11 @@ if model is None:
         x = Flatten()(x)
             
     predictions = Dense(dataset.get_number_of_classes(), activation='softmax')(x)
-    model = Model(input=base_model.input, output=predictions, name="%s%s"%(args.train_net, {True: "_estimated3DBB", False:""}[args.estimated_3DBB is not None]))
+    model = Model(inputs=base_model.input, outputs=predictions, 
+                  name="%s%s"%(args.train_net, {True: "_estimated3DBB", False:""}[args.estimated_3DBB is not None]))
     optimizer = SGD(lr=args.lr, decay=1e-4, nesterov=True)
     model.compile(optimizer=optimizer, loss='categorical_crossentropy', metrics=["accuracy"])
-
+    print(model.summary())
 
 print("Model name: %s"%(model.name))
 if args.estimated_3DBB is not None and "estimated3DBB" not in model.name:
@@ -93,23 +106,35 @@ if args.eval is None:
     ensure_dir(args.tensorboard_dir)
     ensure_dir(args.snapshots_dir)
     tb_callback = TensorBoard(args.tensorboard_dir, histogram_freq=1, write_graph=False, write_images=False)
-    saver_callback = ModelCheckpoint(os.path.join(args.snapshots_dir, "model_{epoch:03d}_{val_acc:.2f}.h5"), period=4 )
+    saver_callback = ModelCheckpoint(os.path.join(args.snapshots_dir, "model_best.h5"), save_freq=4 )
 
     #%% get initial epoch
     initial_epoch = 0
     if args.resume is not None:
         initial_epoch = int(os.path.basename(args.resume).split("_")[1]) + 1
 
-
-    model.fit_generator(generator=generator_train, 
-                        samples_per_epoch=generator_train.n,
-                        nb_epoch=args.epochs,
+    batch_size = 8
+    
+    # model.fit_generator(generator_train, 
+    #                     steps_per_epoch=generator_train.n / batch_size,
+    #                     epochs=args.epochs,
+    #                     verbose=1,
+    #                     validation_data=generator_val,
+    #                     validation_steps=math.ceil(generator_val.n / batch_size),
+    #                     callbacks=[tb_callback, saver_callback],
+    #                     initial_epoch = initial_epoch,
+    #                     )
+    
+    model.fit(generator_train, 
+                        batch_size = batch_size,
+                        epochs=args.epochs,
                         verbose=1,
                         validation_data=generator_val,
-                        nb_val_samples=generator_val.n,
+                        validation_steps=math.ceil(generator_val.n / batch_size),
                         callbacks=[tb_callback, saver_callback],
                         initial_epoch = initial_epoch,
                         )
+
 
     #%% save trained data
     print("Saving the final model to %s"%(args.output_final_model_path))
@@ -120,7 +145,7 @@ if args.eval is None:
 #%% evaluate the model 
 print("Running evaluation...")
 dataset.initialize_data("test")
-generator_test = BoxCarsDataGenerator(dataset, "test", args.batch_size, training_mode=False, generate_y=False)
+generator_test = BoxCarsDataGenerator(dataset, "test", batch_size, training_mode=False, generate_y=False)
 start_time = time.time()
 predictions = model.predict_generator(generator_test, generator_test.n)
 end_time = time.time()
